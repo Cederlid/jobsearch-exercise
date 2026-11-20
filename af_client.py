@@ -1,44 +1,97 @@
+import os
 import json
 import requests
 
-url = "https://jobsearch.api.jobtechdev.se"
-url_for_search = f"{url}/search"
+BASE_URL = "https://jobsearch.api.jobtechdev.se"
+SEARCH_ENDPOINT = f"{BASE_URL}/search"
 
-def _get_ads(params):
-    headers = {'accept': 'application/json'}
-    response = requests.get(url_for_search, headers=headers, params=params)
-    response.raise_for_status()
-    return json.loads(response.content.decode('utf8'))
-
-def example_search_return_number_of_hits(query):
-    # limit: 0 means no ads, just a value of how many ads were found.
-    search_params = {'q': query, 'limit': 0}
-    json_response = _get_ads(search_params)
-    number_of_hits = json_response['total']['value']
-    print(f"\nNumber of hits = {number_of_hits}")
+os.makedirs("raw", exist_ok=True)
 
 
-def example_search_loop_through_hits(query):
-    # limit = 100 is the max number of hits that can be returned.
-    # If there are more (which you find with ['total']['value'] in the json response)
-    # you have to use offset and multiple requests to get all ads.
-    search_params = {'q': query, 'limit': 100}
-    json_response = _get_ads(search_params)
-    hits = json_response['hits']
-    for hit in hits:
-        print(f"{hit['headline']}, {hit['employer']['name']}")
+def _get_ads(params: dict) -> dict:
+    """
+    Gör en GET-förfrågan till JobSearch API.
+    - params: dictionary med query-parametrar
+    - returnerar: JSON som Python-dict
+    """
+    headers = {"accept": "application/json"}
 
-def write_ads(data: dict):
-    with open("jobads.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    try:
+        response = requests.get(
+            SEARCH_ENDPOINT,
+            headers=headers,
+            params=params,
+            timeout=10 
+        )
+        response.raise_for_status()  
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Fel vid API-anrop: {e}")
+        raise
 
-if __name__ == '__main__':
-    query = 'lärare uppsala'
-    example_search_loop_through_hits(query)
-    example_search_return_number_of_hits(query)
+
+def fetch_all_ads(published_after: str, region: str) -> list:
+    """
+    Hämtar alla annonser enligt filter:
+     - publiceringsdatum efter 'published_after'
+     - plats = region
+     Hanterar paginering med offset/limit.
+    Returnerar en lista med alla träffar.
+    """
+    all_hits = []
+    limit = 100   # Max antal per request
+    offset = 0    # Börja på första sidan
+
+    while True:
+        params = {
+            "published-after": published_after,  # ISO8601-format: YYYY-MM-DD
+            "region": region,                   # Stockholm-regionens kod enligt API
+            "limit": limit,
+            "offset": offset,
+            "sort": "published.desc"            # sortera nyast först (om API stöder detta)
+        }
+
+        print(f"Hämtar annonser... offset={offset}")
+        data = _get_ads(params)
+
+        hits = data.get("hits", [])
+        all_hits.extend(hits)
+
+        total = data.get("total", {}).get("value", 0)
+        print(f"   Hämtade {len(hits)} / {total}")
+
+        # Avsluta loopen om vi inte fick fler träffar
+        if offset + limit >= total:
+            break
+
+        # Annars hämta nästa sida
+        offset += limit
+
+    return all_hits
+
+
+def save_raw_json(data: dict, filename: str):
+    """
+    Sparar hela JSON-svaret till en fil i katalogen raw/.
+    """
+    filepath = os.path.join("raw", filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"Sparade resultat till {filepath}")
+
 
 def main():
-    print(f"Starting run: ")
-    data = _get_ads()
-    write_ads(data)
-    print(data)
+    # Steg 1: sätt filter
+    published_after = "2025-08-19"   # korrekt ISO-format
+    region = "Stockholm"             # OBS: kontrollera i API-dokumentation exakt fältnamn/kod
+
+    # Steg 2: hämta alla annonser
+    all_hits = fetch_all_ads(published_after, region)
+
+    # Steg 3: spara hela rå-svaret
+    raw_data = {"hits": all_hits}
+    save_raw_json(raw_data, "af_stockholm_after_2025-08-19.json")
+
+
+if __name__ == "__main__":
+    main()
